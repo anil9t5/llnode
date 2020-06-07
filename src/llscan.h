@@ -5,6 +5,9 @@
 #include <map>
 #include <set>
 #include <unordered_set>
+#include <deque>
+#include <vector>
+#include <fstream>
 
 #include "src/error.h"
 #include "src/llnode.h"
@@ -403,6 +406,71 @@ class LLScan {
   ReferencesByPropertyMap references_by_property_;
   ReferencesByStringMap references_by_string_;
   ContextVector contexts_;
+};
+
+
+class HeapGraphNode{
+  private:
+    uint64_t address_;
+    uint64_t name_;
+    int salary;
+
+  public: 
+    ~HeapGraphNode() {}
+    // uint64_t address() { return address_; }
+    // void set_address(uint64_t address) { address_ = address; }
+
+    // uint64_t name() const { return name_; }
+    // void set_name(uint64_t name) { name_ = name; } 
+
+      // Setter
+    void setSalary(int s) {
+      salary = s;
+    }
+    // Getter
+    int getSalary() {
+      return salary;
+    }
+};
+// class HeapSnapshotJSONSerializer{
+//   public:
+//     void NodeDataEntry(Error &err);
+//     void ImplementSnapshot(Error &err);
+//     void EdgeDataEntry(Error &err);
+//     void AddRootEntry();
+//     void AddGcRootsEntry();
+
+//     virtual void SerializeNodes(Error &err);
+//     virtual void SerializeNode(Error &err, HeapGraphNode* node);
+
+//   private:
+//     LLScan* llscan_;
+//     std::deque<HeapGraphNode> nodes_;
+//     std::ofstream file;
+//     HeapGraphNode* node;
+// };  
+
+class HeapSnapshotCommand : public CommandBase{
+  public:
+    HeapSnapshotCommand(LLScan* llscan) : llscan_(llscan) {}
+    ~HeapSnapshotCommand() override {}
+
+    bool DoExecute(lldb::SBDebugger d, char** cmd, lldb::SBCommandReturnObject& result) override;
+    void NodeDataEntry(Error &err);
+    void AddRootEntry();
+    void AddGcRootsEntry();
+    void ImplementSnapshot(Error &err);
+
+    void SerializeNodes(Error &err);
+    void SerializeNode(Error &err, HeapGraphNode* node);
+
+
+  private:
+    LLScan* llscan_;
+    std::deque<HeapGraphNode> nodes_;
+    std::ofstream file;
+    Error err;
+    
 };
 
 }  // namespace llnode

@@ -21,7 +21,7 @@ class Printer;
 class FindJSObjectsVisitor;
 class FindReferencesCmd;
 class FindObjectsCmd;
-
+class HeapSnapshotCommand;
 namespace v8 {
 
 // Forward declarations
@@ -752,6 +752,7 @@ class LLV8 {
   friend class llnode::FindObjectsCmd;
   friend class llnode::FindReferencesCmd;
   friend class llnode::node::constants::Environment;
+  friend class llnode::HeapSnapshotCommand;
 };
 
 #undef V8_VALUE_DEFAULT_METHODS

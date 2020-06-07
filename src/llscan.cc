@@ -1697,4 +1697,58 @@ void LLScan::ClearReferences() {
   }
   references_by_string_.clear();
 }
+
+bool HeapSnapshotCommand::DoExecute(SBDebugger d, char** cmd, SBCommandReturnObject& result){
+  file.open("core-dump.heapsnapshot");
+  SBTarget target = d.GetSelectedTarget();
+  if(!target.IsValid()){
+    result.SetError("Invalid process..\n");
+    return false;
+  }
+
+  // Load V8 constants from postmortem data
+  llscan_->v8()->Load(target);
+
+  
+  /* Ensure we have a map of objects. */
+  if (!llscan_->ScanHeapForObjects(target, result)) {
+    result.SetStatus(eReturnStatusFailed);
+    return false;
+  }
+
+  NodeDataEntry(err);
+  ImplementSnapshot(err);
+  file.close();
+  return true;
+}
+
+
+void HeapSnapshotCommand::NodeDataEntry(Error &err){
+  std::cout << "Called: " << std::endl;
+  for(auto record_map : llscan_->GetMapsToInstances()){
+    for(auto record : record_map.second->GetInstances()){
+      HeapGraphNode node;
+      node.setSalary(5000);
+      // node->set_address('54457077349505');
+      nodes_.push_back(node);
+    }
+  }
+}
+
+void HeapSnapshotCommand::ImplementSnapshot(Error &err) {
+  SerializeNodes(err);
+}
+
+void HeapSnapshotCommand::SerializeNodes(Error &err){
+  for(auto node : nodes_){
+    SerializeNode(err, &node);
+  }
+}
+
+void HeapSnapshotCommand::SerializeNode(Error& err, HeapGraphNode* node){
+  
+  std::cout << "Node: " << std::endl;
+  std::cout << node->getSalary() << std::endl;
+  
+}
 }  // namespace llnode
