@@ -523,7 +523,7 @@ bool PluginInitialize(SBDebugger d) {
       "running process._getActiveRequests() on the living process.\n");
 
   v8.AddCommand(
-      "snapshotdata", new llnode::HeapSnapshotCommand(&llscan), "Finds data for generating heap snapshot.\n");
+      "snapshotdata", new llnode::HeapSnapshotJSONSerializer(&llscan), "Finds data for generating heap snapshot.\n");
   // Set initial value for color support
   llnode::Settings* settings = llnode::Settings::GetSettings();
   settings->SetColor("auto");

@@ -21,7 +21,7 @@ class Printer;
 class FindJSObjectsVisitor;
 class FindReferencesCmd;
 class FindObjectsCmd;
-class HeapSnapshotCommand;
+class HeapSnapshotJSONSerializer;
 namespace v8 {
 
 // Forward declarations
@@ -333,10 +333,10 @@ class JSObject : public HeapObject {
 
   inline HeapNumber GetDoubleField(int64_t index, Error err);
 
- protected:
-  friend class llnode::Printer;
   template <class T>
   inline T GetInObjectValue(int64_t size, int index, Error& err);
+ protected:
+  friend class llnode::Printer;
   void ElementKeys(std::vector<std::string>& keys, Error& err);
   void DictionaryKeys(std::vector<std::string>& keys, Error& err);
   void DescriptorKeys(std::vector<std::string>& keys, Map map, Error& err);
@@ -752,7 +752,7 @@ class LLV8 {
   friend class llnode::FindObjectsCmd;
   friend class llnode::FindReferencesCmd;
   friend class llnode::node::constants::Environment;
-  friend class llnode::HeapSnapshotCommand;
+  friend class llnode::HeapSnapshotJSONSerializer;
 };
 
 #undef V8_VALUE_DEFAULT_METHODS

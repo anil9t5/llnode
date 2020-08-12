@@ -19,7 +19,7 @@ namespace llnode {
 
 class LLScan;
 class TypeRecord;
-
+class HeapSnapshotJSONSerializer;
 namespace v8 {
 class LLV8;
 }

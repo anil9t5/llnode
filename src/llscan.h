@@ -133,7 +133,7 @@ class FindReferencesCmd : public CommandBase {
                        ReferencesVector* already_visited_references,
                        int level = 0);
 
-  void ScanForReferences(ObjectScanner* scanner);
+  void ScanForReferences(ObjectScanner* scanner); 
 
   void PrintRecursiveReferences(lldb::SBCommandReturnObject& result,
                                 ScanOptions* options,
@@ -413,62 +413,121 @@ class HeapGraphNode{
   private:
     uint64_t address_;
     uint64_t name_;
-    int salary;
+    uint64_t id_;
+    uint64_t size_;
+    uint64_t children_;
+    uint64_t trace_node_id_;
+    LLScan* llscan_;
 
   public: 
     ~HeapGraphNode() {}
-    // uint64_t address() { return address_; }
-    // void set_address(uint64_t address) { address_ = address; }
+    enum Type { /** node type (see HeapGraphNode::Type). in v8-profiler.h in v8 source */
+      kHidden = 0,  
+      kArray = 1,  
+      kString = 2, 
+      kObject = 3,  
+      kCode = 4,  
+      kClosure = 5,  
+      kRegExp = 6,  
+      kHeapNumber = 7,  
+      kNative = 8,  
+      kSynthetic = 9,  
+      kConsString = 10,  
+      kSlicedString = 11,  
+      kSymbol = 12,  
+      kSimdValue = 13,  
+      kInvalid = -1
+    };
 
-    // uint64_t name() const { return name_; }
-    // void set_name(uint64_t name) { name_ = name; } 
+    Type type_;
 
-      // Setter
-    void setSalary(int s) {
-      salary = s;
-    }
-    // Getter
-    int getSalary() {
-      return salary;
-    }
+    uint64_t address() { return address_; }
+    void set_address(uint64_t address) { address_ = address; }
+
+    uint64_t name() const { return name_; }
+    void set_name(uint64_t name) { name_ = name; } 
+
+    uint64_t id() const { return id_; }
+    void set_id(uint64_t id) { id_ = id; }
+
+    u_int64_t size() const { return size_; }
+    void set_size(uint64_t size) { size_ = size; }
+
+    uint64_t children() const { return children_; }
+    void set_children(uint64_t children) { children_ = children; }
+
+    uint64_t trace_node_id() const { return trace_node_id_; }
+    void set_trace_node_id(uint64_t trace_node_id) { trace_node_id_ = trace_node_id; }
 };
-// class HeapSnapshotJSONSerializer{
-//   public:
-//     void NodeDataEntry(Error &err);
-//     void ImplementSnapshot(Error &err);
-//     void EdgeDataEntry(Error &err);
-//     void AddRootEntry();
-//     void AddGcRootsEntry();
 
-//     virtual void SerializeNodes(Error &err);
-//     virtual void SerializeNode(Error &err, HeapGraphNode* node);
-
-//   private:
-//     LLScan* llscan_;
-//     std::deque<HeapGraphNode> nodes_;
-//     std::ofstream file;
-//     HeapGraphNode* node;
-// };  
-
-class HeapSnapshotCommand : public CommandBase{
+class HeapGraphEdge{
+  private:
+    uint64_t to_node_id_; //ID of the node that edge points to..
+    uint64_t to_address_;
+    uint64_t name_or_index_;
+  
   public:
-    HeapSnapshotCommand(LLScan* llscan) : llscan_(llscan) {}
-    ~HeapSnapshotCommand() override {}
+    ~HeapGraphEdge() {}
+      
+    enum Type{
+      kContextVariable = 0,  // A variable from a function context.
+      kElement = 1,          // An element of an array.
+      kProperty = 2,         // A named object property.
+      kInternal = 3,         // A link that can't be accessed from JS,
+                             // thus, its name isn't a real property name
+                             // (e.g. parts of a ConsString).
+      kHidden = 4,           // A link that is needed for proper sizes
+                             // calculation, but may be hidden from user.
+      kShortcut = 5,         // A link that must not be followed during
+                             // sizes calculation.
+      kWeak = 6              // A weak reference (ignored by the GC).
+    };
+    
+    Type type_;
+
+    uint64_t to_node_id() const { return to_node_id_; }
+    void set_to_node_id(uint64_t to_node_id) { to_node_id_ = to_node_id; }
+
+    uint64_t to_address() const { return to_address_; }
+    void set_to_address(uint64_t to_address) { to_address_ = to_address; }
+
+    uint64_t name_or_index() const { return name_or_index_; }
+    void set_name_or_index(uint64_t name_or_index) { name_or_index_ = name_or_index; }
+};
+
+class HeapSnapshotJSONSerializer : public CommandBase{
+  public:
+    HeapSnapshotJSONSerializer(LLScan* llscan) : llscan_(llscan) {}
+    ~HeapSnapshotJSONSerializer() override {}
 
     bool DoExecute(lldb::SBDebugger d, char** cmd, lldb::SBCommandReturnObject& result) override;
-    void NodeDataEntry(Error &err);
-    void AddRootEntry();
-    void AddGcRootsEntry();
+    void DataEntry(Error &err);
+    
+    void InitialEntry(Error &err, uint64_t next_id);
+    void AddGCRootsEntry(Error &err, uint64_t next_id);
+    HeapGraphNode::Type GetInstanceType(Error& err, uint64_t word);
+    uint64_t GetStringId(Error &err, std::string name);
+    uint64_t GetChildrenCount(Error &err, uint64_t word);
+
     void ImplementSnapshot(Error &err);
+    void SnapshotSerializer(Error &err);
 
     void SerializeNodes(Error &err);
-    void SerializeNode(Error &err, HeapGraphNode* node);
+    void SerializeNode(Error &err, HeapGraphNode* node, bool initial_node);
+    uint64_t GetNodeSelfSize(Error& err, uint64_t word);
 
+    void SerializeEdges(Error &err);
+    void SerializeEdge(Error &err, HeapGraphEdge* edge, bool initial_edge);
+
+    void SerializeStrings(Error &err);
+    void SerializeString(Error &err, std::string string);
 
   private:
     LLScan* llscan_;
     std::deque<HeapGraphNode> nodes_;
-    std::ofstream file;
+    std::deque<HeapGraphEdge> edges_;
+    std::ofstream write_;
+    std::vector<std::string> strings_;
     Error err;
     
 };

@@ -1542,7 +1542,7 @@ std::string FindJSObjectsVisitor::MapCacheEntry::GetTypeNameWithProperties(
   if (max_properties < properties_.size()) {
     type_name_with_properties += ", ...";
   }
-
+  
   return type_name_with_properties;
 }
 
@@ -1698,8 +1698,8 @@ void LLScan::ClearReferences() {
   references_by_string_.clear();
 }
 
-bool HeapSnapshotCommand::DoExecute(SBDebugger d, char** cmd, SBCommandReturnObject& result){
-  file.open("core-dump.heapsnapshot");
+bool HeapSnapshotJSONSerializer::DoExecute(SBDebugger d, char** cmd, SBCommandReturnObject& result){
+  write_.open("core-dump.heapsnapshot");
   SBTarget target = d.GetSelectedTarget();
   if(!target.IsValid()){
     result.SetError("Invalid process..\n");
@@ -1716,39 +1716,475 @@ bool HeapSnapshotCommand::DoExecute(SBDebugger d, char** cmd, SBCommandReturnObj
     return false;
   }
 
-  NodeDataEntry(err);
+  DataEntry(err);
   ImplementSnapshot(err);
-  file.close();
+
+  write_.close();
   return true;
 }
 
+uint64_t HeapSnapshotJSONSerializer::GetChildrenCount(Error &err, uint64_t word){ //Edge count...
+  v8::Value v8_value(llscan_->v8(), word); //Looks in llv8.h
+  uint64_t childrenCount = 0;
+  v8::HeapObject heap_object(v8_value); //Get heap object..
+  if(!heap_object.Check()) return -1;
+  v8::HeapObject map_object = heap_object.GetMap(err); //Get map object..
+  if(err.Fail() || !map_object.Check()) return -1;
 
-void HeapSnapshotCommand::NodeDataEntry(Error &err){
-  std::cout << "Called: " << std::endl;
+  v8::Map map(map_object); // Accessing meta map inside Map object..
+
+  v8::HeapObject descriptors_obj = map.InstanceDescriptors(err);
+  if (err.Fail()) return 0;
+
+  v8::DescriptorArray descriptors(descriptors_obj); //From llv8.cc function DescriptorEntries...
+  int64_t no_of_own_descriptors_count = map.NumberOfOwnDescriptors(err);
+  if (err.Fail()) return {};
+
+  int64_t in_object_properties = map.InObjectProperties(err);
+  if (err.Fail()) return {};
+
+  int64_t instance_size = map.InstanceSize(err);
+  if (err.Fail()) return 0;
+
+  v8::JSObject js_obj(heap_object);
+  v8::HeapObject extra_properties_obj = js_obj.Properties(err);
+  if (err.Fail()) return {};
+
+  v8::FixedArray extra_properties(extra_properties_obj);
+
+  // Iterate over elements
+  v8::HeapObject elements_obj = js_obj.Elements(err);
+  v8::FixedArray elements(elements_obj);
+  uint64_t length = js_obj.GetArrayLength(err);
+  
+  for (int64_t i = 0; i < length; i++) {
+    v8::Value value = elements.Get<v8::Value>(i, err);
+    if (err.Fail()) return 0;
+
+    bool is_hole = value.IsHole(err);
+    if (err.Fail()) return 0;
+
+    // Skip holes
+    if (is_hole) continue;
+
+    v8::Smi smi(value);
+    if (smi.Check()) {
+      continue;
+    };
+
+    v8::HeapObject obj(value);
+    if (!obj.Check()) {
+      continue;
+    }
+
+    int64_t type = obj.GetType(err);
+    v8::LLV8* v8 = heap_object.v8();
+    if (err.Fail()) return false;
+
+    if (type == v8->types()->kOddballType) {
+      continue;
+    }
+
+    if (type == v8->types()->kJSFunctionType) {
+      continue;
+    }
+    v8::JSObject js_obj(heap_object);
+  
+    auto scanner = new FindReferencesCmd::ReferenceScanner(llscan_, value);
+    if (!scanner->AreReferencesLoaded()) {
+      scanner->ScanRefs(js_obj, err);
+    }
+
+    auto references = llscan_->GetReferencesByValue(obj.raw());
+    auto pos = std::distance(references->begin(),
+        std::find(references->begin(), references->end(), word));
+
+    if (pos >= references->size()) {
+      // If the reference couldn't be found in the heap, skip
+      continue;
+    }
+
+    HeapGraphEdge edge;
+    edge.type_ = HeapGraphEdge::Type::kElement;
+    edge.set_name_or_index(i);
+    edge.set_to_address(obj.raw()); //Adds heap objects address to edges deque...
+    edges_.push_back(edge);
+
+    childrenCount++;
+  }
+
+  for (int64_t i = 0; i < no_of_own_descriptors_count; i++) {
+    v8::Value value;
+    v8::Smi details = descriptors.GetDetails(i);
+    if (!details.Check()) {
+      PRINT_DEBUG("Failed to get details for index %ld", i);
+      continue;
+    }
+
+    v8::Value key = descriptors.GetKey(i);
+    if (!key.Check()) continue;
+
+    if (descriptors.IsConstFieldDetails(details) ||
+        descriptors.IsDescriptorDetails(details)) {
+
+      value = descriptors.GetValue(i);
+      if (!value.Check()) continue;
+      continue;
+    }
+    // Skip non-fields for now, Object.keys(obj) does
+    // not seem to return these (for example the "length"
+    // field on an array).
+    if (!descriptors.IsFieldDetails(details)) continue;
+
+    if (descriptors.IsDoubleField(details)) continue;
+
+    int64_t index = descriptors.FieldIndex(details) - in_object_properties;
+
+    if (index < 0) {
+      value = js_obj.GetInObjectValue<v8::Value>(instance_size, index, err);
+    } else {
+      value = extra_properties.Get<v8::Value>(index, err);
+    }
+    // Test if this is SMI or if not heap object...
+    // Skip inspecting things that look like Smi's, and also if they aren't objects. 
+    v8::Smi smi(value);
+    v8::HeapObject obj(value); // Takes value of the property and returns its heap object...
+    if (!obj.Check() || smi.Check()) {
+      continue;
+    }
+
+    //Check objects type...
+    int64_t type = obj.GetType(err);
+    if(err.Fail()) continue;
+
+    v8::LLV8* v8 = heap_object.v8();
+    if(type == v8->types()->kJSFunctionType || type == v8->types()->kOddballType){
+      continue;
+    }
+
+    
+    HeapGraphEdge edge;
+    edge.type_ = HeapGraphEdge::Type::kProperty;
+    edge.set_name_or_index(GetStringId(err, key.ToString(err)));
+    edge.set_to_address(obj.raw()); //Adds heap objects address to edges deque...
+    edges_.push_back(edge);
+
+    // if(edge.name_or_index() == 107){//Check for not found edge index..
+    //     std::cout << edge.to_address() << std::endl;
+    //   }else{
+    //     std::cout << "Not Found: " << std::endl;
+    //   }
+
+    // if(obj.raw() == 32706854294585){ //Just for edge data validation by quering edge data using node's address...
+    //   std::cout << "Edge index: " << edge.name_or_index() << ", " << "Edge name: " << key.ToString(err) << std::endl;
+    // }
+    childrenCount++;
+    // std::cout << "String ID: " << GetStringId(err, key.ToString(err)) << std::endl;
+
+
+
+  }
+  // if(heap_object.GetTypeName(err).find("<unknown>") != std::string::npos){
+  //   std::cout << heap_object.GetTypeName(err) << std::endl;
+  //   // continue;
+  // } 
+  
+  
+  return childrenCount;
+}
+
+void HeapSnapshotJSONSerializer::DataEntry(Error &err){
+  uint64_t next_id = 1;
+  const int step = 2;
+  std::map<uint64_t, HeapGraphNode> visitedNode;
+
+  InitialEntry(err, next_id);
+  
+  AddGCRootsEntry(err, next_id);
+
+  
+
   for(auto record_map : llscan_->GetMapsToInstances()){
     for(auto record : record_map.second->GetInstances()){
+      if(visitedNode.count(record) != 0){ return; } 
       HeapGraphNode node;
-      node.setSalary(5000);
-      // node->set_address('54457077349505');
+      node.set_address(record);
+      node.type_ = GetInstanceType(err, record); //Enum type from struct Node..
+      node.set_name(GetStringId(err, record_map.second->GetTypeName())); //Index to the string representing the name of this node
+      node.set_id(next_id);
+      next_id += step;
+      node.set_size(GetNodeSelfSize(err, record));
+      node.set_children(GetChildrenCount(err, record));
+      if(node.children() == -1) continue; 
+      if(node.type_ == HeapGraphNode::Type::kInvalid) continue;
       nodes_.push_back(node);
+      visitedNode.insert(std::pair<uint64_t, HeapGraphNode>(record, nodes_.back()));
+    }
+  }
+  for(auto& edge : edges_){
+    if (visitedNode.count(edge.to_address()) == 0) { 
+      edge.set_to_node_id(0);
+      continue;
+    }
+  
+    HeapGraphNode node = visitedNode.at(edge.to_address()); 
+    
+    if((node.address() != edge.to_address())) { //Check address of both node and its edge and if it doesn't match set its corresponding node id to -1
+      edge.set_to_node_id(0);
+      continue;
+    }
+    else{
+      // std::cout << "Node id: " << node.id() << ", " << node.address() << ", " << "Edge index: " << edge.name_or_index() << std::endl;
+      edge.set_to_node_id(node.id()*6); //Otherwise set edge's corresponding from node id..
     }
   }
 }
 
-void HeapSnapshotCommand::ImplementSnapshot(Error &err) {
-  SerializeNodes(err);
+void HeapSnapshotJSONSerializer::InitialEntry(Error &err, uint64_t next_id){
+    HeapGraphNode node;
+    node.set_address(0);
+    node.type_ = HeapGraphNode::Type::kSynthetic;
+    node.set_name(GetStringId(err, ""));
+    node.set_id(1);
+    next_id += 2;
+    node.set_size(0);
+    node.set_children(0);
+    nodes_.push_back(node);
 }
 
-void HeapSnapshotCommand::SerializeNodes(Error &err){
+void HeapSnapshotJSONSerializer::AddGCRootsEntry(Error &err, uint64_t next_id){
+    HeapGraphNode node;
+    node.set_address(0);
+    node.type_ = HeapGraphNode::Type::kSynthetic;
+    node.set_name(GetStringId(err, "(GC roots)"));
+    node.set_id(next_id);
+    next_id += 2;
+    node.set_size(0);
+    node.set_children(0);
+    nodes_.push_back(node);
+}
+
+
+HeapGraphNode::Type HeapSnapshotJSONSerializer::GetInstanceType(
+    Error &err, uint64_t word) {
+  v8::Value v8_value(llscan_->v8(), word); //Accessing v8() from LLScan..
+  v8::HeapObject heap_object(v8_value);
+  int64_t type = heap_object.GetType(err);
+  v8::LLV8* v8 = heap_object.v8();
+  if(type == v8->types()->kCodeType){ //Accessing types() from llv8.h Type types..
+    return HeapGraphNode::Type::kCode;
+  }
+  if(type == v8->types()->kJSFunctionType){
+    return HeapGraphNode::Type::kClosure;
+  }
+  if(type == *v8->types()->kJSRegExpType){
+    return HeapGraphNode::Type::kRegExp;
+  }
+  if(type == v8->types()->kJSObjectType){
+    return HeapGraphNode::Type::kObject;
+  }
+  if(type == v8->types()->kHeapNumberType){
+    return HeapGraphNode::Type::kHeapNumber;
+  }
+  if(type < v8->types()->kFirstNonstringType){
+    v8::String str(heap_object);
+
+    v8::CheckedType<int64_t> str_repr = str.Representation(err);
+
+    if(*str_repr == v8->string()->kConsStringTag){
+      return HeapGraphNode::Type::kConsString;
+    }else if(*str_repr == v8->string()->kSlicedStringTag){
+      return HeapGraphNode::Type::kSlicedString;
+    }else{
+      return HeapGraphNode::Type::kString;
+    }
+  }
+  if(type == v8->types()->kJSArrayBufferType || 
+     type == v8->types()->kJSTypedArrayType  ||
+     type == v8->types()->kFixedArrayType    ||
+     type == v8->types()->kJSArrayType){
+    return HeapGraphNode::Type::kArray;
+  }
+      
+  return HeapGraphNode::Type::kInvalid;
+};
+
+uint64_t HeapSnapshotJSONSerializer::GetStringId(Error &err, std::string name) {
+  auto position = std::distance(strings_.begin(), find(strings_.begin(), strings_.end(), name)); // Returns position as id of the object name..
+  uint64_t index;
+  
+  if(position >= strings_.size()) {
+    index = strings_.size();
+    strings_.push_back(name);
+  } else {
+    index = position;
+  }
+  // file << index + 1 << ", " << name << std::endl;
+  return index + 1;  
+}
+
+
+
+void HeapSnapshotJSONSerializer::ImplementSnapshot(Error &err) {
+  write_ << "{";
+  write_ << "\"snapshot\":{";
+  SnapshotSerializer(err);
+  write_ << "}," << std::endl;
+  write_ << "\"nodes\":[";
+  SerializeNodes(err);  
+  write_ << "]," << std::endl;
+  write_ << "\"edges\":[";
+  SerializeEdges(err); 
+  write_ << "]" << std::endl;
+  write_ << "\"trace_function_infos\":[";
+  write_ << "]" << std::endl;
+  write_ << "\"trace_tree\":[";
+  write_ << "]" << std::endl;
+  write_ << "\"samples\":[";
+  write_ << "]," << std::endl;
+  write_ << "\"strings\":[";
+  SerializeStrings(err);
+  write_ << "]," << std::endl;
+
+}
+
+void HeapSnapshotJSONSerializer::SnapshotSerializer(Error &err){
+  write_ << "\"meta\":";
+  // The object describing node serialization layout.
+  // We use a set of macros to improve readability.
+#define JSON_A(s) "[" s "]"
+#define JSON_O(s) "{" s "}"
+#define JSON_S(s) "\"" s "\""
+  write_ << JSON_O(
+    JSON_S("node_fields") ":" JSON_A(
+        JSON_S("type") ","
+        JSON_S("name") ","
+        JSON_S("id") ","
+        JSON_S("self_size") ","
+        JSON_S("edge_count") ","
+        JSON_S("trace_node_id")) ","
+    JSON_S("node_types") ":" JSON_A(
+        JSON_A(
+            JSON_S("hidden") ","
+            JSON_S("array") ","
+            JSON_S("string") ","
+            JSON_S("object") ","
+            JSON_S("code") ","
+            JSON_S("closure") ","
+            JSON_S("regexp") ","
+            JSON_S("number") ","
+            JSON_S("native") ","
+            JSON_S("synthetic") ","
+            JSON_S("concatenated string") ","
+            JSON_S("sliced string")) ","
+        JSON_S("string") ","
+        JSON_S("number") ","
+        JSON_S("number") ","
+        JSON_S("number") ","
+        JSON_S("number") ","
+        JSON_S("number")) ","
+    JSON_S("edge_fields") ":" JSON_A(
+        JSON_S("type") ","
+        JSON_S("name_or_index") ","
+        JSON_S("to_node")) ","
+    JSON_S("edge_types") ":" JSON_A(
+        JSON_A(
+            JSON_S("context") ","
+            JSON_S("element") ","
+            JSON_S("property") ","
+            JSON_S("internal") ","
+            JSON_S("hidden") ","
+            JSON_S("shortcut") ","
+            JSON_S("weak")) ","
+        JSON_S("string_or_number") ","
+        JSON_S("node")) ","
+    JSON_S("trace_function_info_fields") ":" JSON_A(
+        JSON_S("function_id") ","
+        JSON_S("name") ","
+        JSON_S("script_name") ","
+        JSON_S("script_id") ","
+        JSON_S("line") ","
+        JSON_S("column")) ","
+    JSON_S("trace_node_fields") ":" JSON_A(
+        JSON_S("id") ","
+        JSON_S("function_info_index") ","
+        JSON_S("count") ","
+        JSON_S("size") ","
+        JSON_S("children")) ","
+    JSON_S("sample_fields") ":" JSON_A(
+        JSON_S("timestamp_us") ","
+        JSON_S("last_assigned_id")));
+#undef JSON_S
+#undef JSON_O
+#undef JSON_A
+  write_ << ",\"node_count\":";
+  write_ << nodes_.size();
+
+  write_ << ",\"edge_count\":";
+  write_ << edges_.size();
+  write_ << ",\"trace_function_count\":";
+  uint32_t count = 0;
+  write_ << count;
+}
+
+void HeapSnapshotJSONSerializer::SerializeNodes(Error &err){
+  bool initial_node = true;
   for(auto node : nodes_){
-    SerializeNode(err, &node);
+    SerializeNode(err, &node, initial_node);
+    if(err.Fail()) return;
+    initial_node = false;
   }
 }
 
-void HeapSnapshotCommand::SerializeNode(Error& err, HeapGraphNode* node){
-  
-  std::cout << "Node: " << std::endl;
-  std::cout << node->getSalary() << std::endl;
-  
+void HeapSnapshotJSONSerializer::SerializeNode(Error& err, HeapGraphNode* node, bool initial_node){
+  if(!initial_node){
+    write_ << ',';
+  }
+  write_ << node->type_ << "," << node->name() << "," << node->id() << "," << node->size() << "," << node->children() << "," << node->trace_node_id() << std::endl;
+}
+
+uint64_t HeapSnapshotJSONSerializer::GetNodeSelfSize(
+    Error &err, uint64_t word) {
+  v8::Value v8_value(llscan_->v8(), word); //Looks in llv8.h
+
+  v8::Smi smi(v8_value);  //Check for SMI..
+  if (smi.Check()) return 4;
+
+  v8::HeapObject heap_object(v8_value); //Takes Value as default argument
+  if (!heap_object.Check()) return -1;
+
+  v8::HeapObject map_object = heap_object.GetMap(err);
+  if (err.Fail() || !map_object.Check()) return -1;
+
+  v8::Map map(map_object); //Takes Heap object as default argument V8_VALUE_DEFAULT_METHODS in llv8.h
+  return map.InstanceSize(err);
+}
+
+void HeapSnapshotJSONSerializer::SerializeEdges(Error &err){
+  bool initial_edge = true;
+  for(auto edge : edges_){
+    SerializeEdge(err, &edge, initial_edge);
+    if(err.Fail()) return;
+    initial_edge = false;
+  }
+}
+
+void HeapSnapshotJSONSerializer::SerializeEdge(Error &err, HeapGraphEdge* edge, bool initial_edge){
+  if(!initial_edge){
+    write_ << ',';
+  }
+  write_ << edge->type_ << "," << edge->name_or_index() << "," << edge->to_node_id() << std::endl;
+}
+
+void HeapSnapshotJSONSerializer::SerializeStrings(Error &err){
+  write_ << "\"<dummy>\"";
+  for(auto& string : strings_){
+    SerializeString(err, string.c_str());
+    if(err.Fail()) return;
+  }
+}
+
+void HeapSnapshotJSONSerializer::SerializeString(Error &err, std::string string){
+  write_ << '\"' << string << '\"' << ',' << std::endl;
 }
 }  // namespace llnode

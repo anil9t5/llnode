@@ -155,6 +155,7 @@ Value LLNode::GetHeapTypes(const CallbackInfo& args) {
   return type_list;
 }
 
+
 Object LLNode::GetObjectAtAddress(Napi::Env env, uint64_t addr) {
   Object result = Object::New(env);
 
@@ -167,6 +168,9 @@ Object LLNode::GetObjectAtAddress(Napi::Env env, uint64_t addr) {
 
   return result;
 }
+
+
+
 
 // TODO: create JS object to introspect core dump
 // process/threads/frames

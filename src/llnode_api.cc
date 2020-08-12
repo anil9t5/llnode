@@ -183,6 +183,7 @@ std::unordered_set<uint64_t>* LLNodeApi::GetTypeInstances(size_t type_index) {
   return &(object_types[type_index]->GetInstances());
 }
 
+
 std::string LLNodeApi::GetObject(uint64_t address) {
   v8::Value v8_value(llscan->v8(), address);
   Printer::PrinterOptions printer_options;
@@ -197,4 +198,7 @@ std::string LLNodeApi::GetObject(uint64_t address) {
   }
   return result;
 }
+
+
 }  // namespace llnode
+

@@ -27,10 +27,10 @@ class LLNode : public Napi::ObjectWrap<LLNode> {
   Napi::Value GetProcessObject(const Napi::CallbackInfo& args);
   Napi::Value GetHeapTypes(const Napi::CallbackInfo& args);
   Napi::Value GetObjectAtAddress(const Napi::CallbackInfo& args);
-
   bool heap_initialized_;
 
  protected:
+  Napi::Object GetChildrenCount(Napi::Env env, uint64_t addr);
   Napi::Object GetObjectAtAddress(Napi::Env env, uint64_t addr);
   std::unique_ptr<LLNodeApi> api_;
 };
