@@ -435,7 +435,7 @@ class HeapGraphNode{
       kConsString = 10,  
       kSlicedString = 11,  
       kSymbol = 12,  
-      kSimdValue = 13,  
+      kBigInt = 13,  
       kInvalid = -1
     };
 
@@ -463,8 +463,11 @@ class HeapGraphNode{
 class HeapGraphEdge{
   private:
     uint64_t to_node_id_; //ID of the node that edge points to..
+    uint64_t from_node_id_;
     uint64_t to_address_;
+    uint64_t from_address_;
     uint64_t name_or_index_;
+    std::string name_;
   
   public:
     ~HeapGraphEdge() {}
@@ -488,12 +491,23 @@ class HeapGraphEdge{
     uint64_t to_node_id() const { return to_node_id_; }
     void set_to_node_id(uint64_t to_node_id) { to_node_id_ = to_node_id; }
 
+    uint64_t from_node_id() const { return from_node_id_; }
+    void set_from_node_id(uint64_t from_node_id) { from_node_id_ = from_node_id; }
+
     uint64_t to_address() const { return to_address_; }
     void set_to_address(uint64_t to_address) { to_address_ = to_address; }
 
+    uint64_t from_address() const { return from_address_; }
+    void set_from_address(uint64_t from_address) { from_address_ = from_address; } 
+
     uint64_t name_or_index() const { return name_or_index_; }
     void set_name_or_index(uint64_t name_or_index) { name_or_index_ = name_or_index; }
+
+    std::string name() const { return name_; }
+    void set_name(std::string name) { name_ = name; }
 };
+
+class OutputStreamWriter;
 
 class HeapSnapshotJSONSerializer : public CommandBase{
   public:
@@ -501,10 +515,8 @@ class HeapSnapshotJSONSerializer : public CommandBase{
     ~HeapSnapshotJSONSerializer() override {}
 
     bool DoExecute(lldb::SBDebugger d, char** cmd, lldb::SBCommandReturnObject& result) override;
-    void DataEntry(Error &err);
+    void RecordEntry(Error &err);
     
-    void InitialEntry(Error &err, uint64_t next_id);
-    void AddGCRootsEntry(Error &err, uint64_t next_id);
     HeapGraphNode::Type GetInstanceType(Error& err, uint64_t word);
     uint64_t GetStringId(Error &err, std::string name);
     uint64_t GetChildrenCount(Error &err, uint64_t word);
@@ -519,17 +531,16 @@ class HeapSnapshotJSONSerializer : public CommandBase{
     void SerializeEdges(Error &err);
     void SerializeEdge(Error &err, HeapGraphEdge* edge, bool initial_edge);
 
+    void SerializeString(Error &err, const unsigned char* string);
     void SerializeStrings(Error &err);
-    void SerializeString(Error &err, std::string string);
 
   private:
     LLScan* llscan_;
-    std::deque<HeapGraphNode> nodes_;
-    std::deque<HeapGraphEdge> edges_;
+    std::vector<HeapGraphNode> nodes_;
+    std::vector<HeapGraphEdge> edges_;
     std::ofstream write_;
     std::vector<std::string> strings_;
     Error err;
-    
 };
 
 }  // namespace llnode

@@ -33,7 +33,6 @@ using lldb::SBStream;
 using lldb::SBTarget;
 using lldb::SBValue;
 
-
 char** ParsePrinterOptions(char** cmd, Printer::PrinterOptions* options) {
   static struct option opts[] = {
       {"full-string", no_argument, nullptr, 'F'},
@@ -631,6 +630,7 @@ void FindReferencesCmd::ScanForReferences(ObjectScanner* scanner) {
     }
   }
 }
+
 
 void FindReferencesCmd::PrintRecursiveReferences(
     lldb::SBCommandReturnObject& result, ScanOptions* options,
@@ -1698,6 +1698,7 @@ void LLScan::ClearReferences() {
   references_by_string_.clear();
 }
 
+
 bool HeapSnapshotJSONSerializer::DoExecute(SBDebugger d, char** cmd, SBCommandReturnObject& result){
   write_.open("core-dump.heapsnapshot");
   SBTarget target = d.GetSelectedTarget();
@@ -1716,7 +1717,7 @@ bool HeapSnapshotJSONSerializer::DoExecute(SBDebugger d, char** cmd, SBCommandRe
     return false;
   }
 
-  DataEntry(err);
+  RecordEntry(err);
   ImplementSnapshot(err);
 
   write_.close();
@@ -1742,6 +1743,7 @@ uint64_t HeapSnapshotJSONSerializer::GetChildrenCount(Error &err, uint64_t word)
 
   int64_t in_object_properties = map.InObjectProperties(err);
   if (err.Fail()) return {};
+
 
   int64_t instance_size = map.InstanceSize(err);
   if (err.Fail()) return 0;
@@ -1780,22 +1782,11 @@ uint64_t HeapSnapshotJSONSerializer::GetChildrenCount(Error &err, uint64_t word)
     int64_t type = obj.GetType(err);
     v8::LLV8* v8 = heap_object.v8();
     if (err.Fail()) return false;
+    
 
-    if (type == v8->types()->kOddballType) {
-      continue;
-    }
-
-    if (type == v8->types()->kJSFunctionType) {
-      continue;
-    }
-    v8::JSObject js_obj(heap_object);
-  
-    auto scanner = new FindReferencesCmd::ReferenceScanner(llscan_, value);
-    if (!scanner->AreReferencesLoaded()) {
-      scanner->ScanRefs(js_obj, err);
-    }
-
-    auto references = llscan_->GetReferencesByValue(obj.raw());
+    ReferencesVector* references;
+    references = llscan_->GetReferencesByValue(js_obj.raw());
+    references->push_back(js_obj.raw());
     auto pos = std::distance(references->begin(),
         std::find(references->begin(), references->end(), word));
 
@@ -1803,16 +1794,21 @@ uint64_t HeapSnapshotJSONSerializer::GetChildrenCount(Error &err, uint64_t word)
       // If the reference couldn't be found in the heap, skip
       continue;
     }
-
+   
+        
     HeapGraphEdge edge;
     edge.type_ = HeapGraphEdge::Type::kElement;
-    edge.set_name_or_index(i);
-    edge.set_to_address(obj.raw()); //Adds heap objects address to edges deque...
+    edge.set_name_or_index(GetStringId(err, value.ToString(err)));
+    // edge.set_name(value.ToString(err));
+    edge.set_from_address(js_obj.raw()); //Adds heap objects address to edges deque...
     edges_.push_back(edge);
 
+    
+  
     childrenCount++;
   }
-
+  
+  // Iterate over object properties..
   for (int64_t i = 0; i < no_of_own_descriptors_count; i++) {
     v8::Value value;
     v8::Smi details = descriptors.GetDetails(i);
@@ -1845,6 +1841,7 @@ uint64_t HeapSnapshotJSONSerializer::GetChildrenCount(Error &err, uint64_t word)
     } else {
       value = extra_properties.Get<v8::Value>(index, err);
     }
+
     // Test if this is SMI or if not heap object...
     // Skip inspecting things that look like Smi's, and also if they aren't objects. 
     v8::Smi smi(value);
@@ -1852,60 +1849,83 @@ uint64_t HeapSnapshotJSONSerializer::GetChildrenCount(Error &err, uint64_t word)
     if (!obj.Check() || smi.Check()) {
       continue;
     }
-
     //Check objects type...
     int64_t type = obj.GetType(err);
     if(err.Fail()) continue;
 
     v8::LLV8* v8 = heap_object.v8();
-    if(type == v8->types()->kJSFunctionType || type == v8->types()->kOddballType){
-      continue;
+    // if(type == v8->types()->kJSFunctionType || type == v8->types()->kOddballType){
+    //   continue;
+    // }
+
+    v8::JSObject js_obj(heap_object);
+
+    auto scanner = new FindReferencesCmd::ReferenceScanner(llscan_, value);
+    if (!scanner->AreReferencesLoaded()) {
+      v8::String str(heap_object);
+      scanner->ScanRefs(str, err);
     }
 
+    ReferencesVector* references;
+    references = llscan_->GetReferencesByProperty(key.ToString(err));
+    references->push_back(js_obj.raw());
+    auto pos = std::distance(references->begin(),
+        std::find(references->begin(), references->end(), word));
+
+    if (pos >= references->size()) {
+      // If the reference couldn't be found in the heap, skip
+      continue;
+    }
     
+    // std::cout << "JS Objects: " << ", " << js_obj.raw() << ", " << key.ToString(err) << ", " << GetStringId(err, key.ToString(err)) << std::endl;
+
     HeapGraphEdge edge;
     edge.type_ = HeapGraphEdge::Type::kProperty;
     edge.set_name_or_index(GetStringId(err, key.ToString(err)));
-    edge.set_to_address(obj.raw()); //Adds heap objects address to edges deque...
+    // edge.set_name(key.ToString(err));
+    edge.set_from_address(js_obj.raw()); //Adds heap objects address to edges deque...
     edges_.push_back(edge);
 
-    // if(edge.name_or_index() == 107){//Check for not found edge index..
-    //     std::cout << edge.to_address() << std::endl;
-    //   }else{
-    //     std::cout << "Not Found: " << std::endl;
-    //   }
-
-    // if(obj.raw() == 32706854294585){ //Just for edge data validation by quering edge data using node's address...
-    //   std::cout << "Edge index: " << edge.name_or_index() << ", " << "Edge name: " << key.ToString(err) << std::endl;
-    // }
     childrenCount++;
-    // std::cout << "String ID: " << GetStringId(err, key.ToString(err)) << std::endl;
-
-
 
   }
-  // if(heap_object.GetTypeName(err).find("<unknown>") != std::string::npos){
-  //   std::cout << heap_object.GetTypeName(err) << std::endl;
-  //   // continue;
-  // } 
   
   
   return childrenCount;
 }
 
-void HeapSnapshotJSONSerializer::DataEntry(Error &err){
+void HeapSnapshotJSONSerializer::RecordEntry(Error &err){
   uint64_t next_id = 1;
   const int step = 2;
   std::map<uint64_t, HeapGraphNode> visitedNode;
 
-  InitialEntry(err, next_id);
+  {
+    HeapGraphNode node;
+    node.set_address(0);
+    node.type_ = HeapGraphNode::Type::kSynthetic;
+    node.set_name(GetStringId(err, ""));
+    node.set_id(1);
+    next_id += step;
+    node.set_size(0);
+    node.set_children(0);
+    nodes_.push_back(node);
+  }
   
-  AddGCRootsEntry(err, next_id);
-
-  
+  {
+    HeapGraphNode node;
+    node.set_address(0);
+    node.type_ = HeapGraphNode::Type::kSynthetic;
+    node.set_name(GetStringId(err, "(GC roots)"));
+    node.set_id(next_id);
+    next_id += step;
+    node.set_size(0);
+    node.set_children(0);
+    nodes_.push_back(node);
+  }
 
   for(auto record_map : llscan_->GetMapsToInstances()){
     for(auto record : record_map.second->GetInstances()){
+      std::cout << record << std::endl;
       if(visitedNode.count(record) != 0){ return; } 
       HeapGraphNode node;
       node.set_address(record);
@@ -1914,59 +1934,43 @@ void HeapSnapshotJSONSerializer::DataEntry(Error &err){
       node.set_id(next_id);
       next_id += step;
       node.set_size(GetNodeSelfSize(err, record));
-      node.set_children(GetChildrenCount(err, record));
+      
       if(node.children() == -1) continue; 
       if(node.type_ == HeapGraphNode::Type::kInvalid) continue;
+      node.set_children(GetChildrenCount(err, record));
       nodes_.push_back(node);
-      visitedNode.insert(std::pair<uint64_t, HeapGraphNode>(record, nodes_.back()));
+      visitedNode.insert(std::pair<uint64_t, HeapGraphNode>(record, node));
     }
   }
+
   for(auto& edge : edges_){
-    if (visitedNode.count(edge.to_address()) == 0) { 
+    if (visitedNode.count(edge.from_address()) == 0) { 
       edge.set_to_node_id(0);
       continue;
     }
   
-    HeapGraphNode node = visitedNode.at(edge.to_address()); 
-    
-    if((node.address() != edge.to_address())) { //Check address of both node and its edge and if it doesn't match set its corresponding node id to -1
+    HeapGraphNode node = visitedNode.at(edge.from_address()); //this node has address from the edge... eg: address of User node property "name"...
+
+    // std::cout << "Node address: " << node.address() << ", " << node.id() << ", " << "Edge address: " << edge.from_address() << ", " << edge.name_or_index() << std::endl;
+    // if(node.address() == edge.from_address()){
+    //   // std::cout << "Address matched" << ", " << "Node address: " << node.address() << ", " << node.id() << ", " << "Edge address: " << edge.from_address() << ", " << "Name: " << edge.name() << ", " << edge.name_or_index() << std::endl;
+    //   edge.set_name_or_index(GetStringId(err, edge.name()));
+    //   edge.set_to_node_id(node.name() * 6); //Otherwise set edge's corresponding from node id..
+    // }
+
+    if((node.address() != edge.from_address())) { //Check address of both node and its edge and if it doesn't match set its corresponding node id to 0
       edge.set_to_node_id(0);
       continue;
     }
-    else{
-      // std::cout << "Node id: " << node.id() << ", " << node.address() << ", " << "Edge index: " << edge.name_or_index() << std::endl;
-      edge.set_to_node_id(node.id()*6); //Otherwise set edge's corresponding from node id..
-    }
+    // edge.set_name_or_index(GetStringId(err, edge.name()));
+
+    edge.set_to_node_id(node.name() * 6);
   }
-}
-
-void HeapSnapshotJSONSerializer::InitialEntry(Error &err, uint64_t next_id){
-    HeapGraphNode node;
-    node.set_address(0);
-    node.type_ = HeapGraphNode::Type::kSynthetic;
-    node.set_name(GetStringId(err, ""));
-    node.set_id(1);
-    next_id += 2;
-    node.set_size(0);
-    node.set_children(0);
-    nodes_.push_back(node);
-}
-
-void HeapSnapshotJSONSerializer::AddGCRootsEntry(Error &err, uint64_t next_id){
-    HeapGraphNode node;
-    node.set_address(0);
-    node.type_ = HeapGraphNode::Type::kSynthetic;
-    node.set_name(GetStringId(err, "(GC roots)"));
-    node.set_id(next_id);
-    next_id += 2;
-    node.set_size(0);
-    node.set_children(0);
-    nodes_.push_back(node);
 }
 
 
 HeapGraphNode::Type HeapSnapshotJSONSerializer::GetInstanceType(
-    Error &err, uint64_t word) {
+  Error &err, uint64_t word) {
   v8::Value v8_value(llscan_->v8(), word); //Accessing v8() from LLScan..
   v8::HeapObject heap_object(v8_value);
   int64_t type = heap_object.GetType(err);
@@ -1988,9 +1992,7 @@ HeapGraphNode::Type HeapSnapshotJSONSerializer::GetInstanceType(
   }
   if(type < v8->types()->kFirstNonstringType){
     v8::String str(heap_object);
-
     v8::CheckedType<int64_t> str_repr = str.Representation(err);
-
     if(*str_repr == v8->string()->kConsStringTag){
       return HeapGraphNode::Type::kConsString;
     }else if(*str_repr == v8->string()->kSlicedStringTag){
@@ -2012,14 +2014,13 @@ HeapGraphNode::Type HeapSnapshotJSONSerializer::GetInstanceType(
 uint64_t HeapSnapshotJSONSerializer::GetStringId(Error &err, std::string name) {
   auto position = std::distance(strings_.begin(), find(strings_.begin(), strings_.end(), name)); // Returns position as id of the object name..
   uint64_t index;
-  
-  if(position >= strings_.size()) {
-    index = strings_.size();
+
+  if(position >= strings_.size()) { 
+    index = strings_.size();  
     strings_.push_back(name);
   } else {
     index = position;
   }
-  // file << index + 1 << ", " << name << std::endl;
   return index + 1;  
 }
 
@@ -2045,7 +2046,6 @@ void HeapSnapshotJSONSerializer::ImplementSnapshot(Error &err) {
   write_ << "\"strings\":[";
   SerializeStrings(err);
   write_ << "]," << std::endl;
-
 }
 
 void HeapSnapshotJSONSerializer::SnapshotSerializer(Error &err){
@@ -2169,22 +2169,79 @@ void HeapSnapshotJSONSerializer::SerializeEdges(Error &err){
   }
 }
 
-void HeapSnapshotJSONSerializer::SerializeEdge(Error &err, HeapGraphEdge* edge, bool initial_edge){
+void HeapSnapshotJSONSerializer::SerializeEdge(Error &err, HeapGraphEdge* edge, bool initial_edge){ 
   if(!initial_edge){
     write_ << ',';
   }
   write_ << edge->type_ << "," << edge->name_or_index() << "," << edge->to_node_id() << std::endl;
 }
 
+void HeapSnapshotJSONSerializer::SerializeString(Error &err, const unsigned char* string){
+  write_ << '\n';
+  write_ << '\"';
+  for ( ; *string != '\0'; ++string) { //something related to Convert UTF-8 into \u UTF-16 literal.
+    switch (*string) {
+      case '\b':
+        // writer_->AddString("\\b");
+        write_ << '\\b';
+        continue;
+      case '\f':
+        // writer_->AddString("\\f");
+        write_ << '\\f';
+        continue;
+      case '\n':
+        // writer_->AddString("\\n");
+        write_ << '\\n';
+        continue;
+      case '\r':
+        // writer_->AddString("\\r");
+        write_ << '\\r';
+        continue;
+      case '\t':
+        // writer_->AddString("\\t");
+        write_ << '\\t';
+        continue;
+      case '\"':
+      case '\\':
+        // writer_->AddCharacter('\\');
+        write_ << '\\';
+        // writer_->AddCharacter(*s);
+        write_ << *string;
+        continue;
+      default:
+        if (*string > 31 && *string < 128) {
+          // writer_->AddCharacter(*s);
+          write_ << *string;
+        } else if (*string <= 31) {
+          // Special character with no dedicated literal.
+          // WriteUChar(writer_, *s);
+        } else {
+          // Convert UTF-8 into \u UTF-16 literal.
+          // size_t length = 1, cursor = 0;
+          // for ( ; length <= 4 && *(string + length) != '\0'; ++length) { }
+          // unibrow::uchar c = unibrow::Utf8::CalculateValue(s, length, &cursor);
+          // if (c != unibrow::Utf8::kBadChar) {
+          //   WriteUChar(writer_, c);
+          //   DCHECK_NE(cursor, 0);
+          //   s += cursor - 1;
+          // } else {
+          //   writer_->AddCharacter('?');
+          // }
+        }
+    }
+  }
+  write_ << '\"';
+}
+
 void HeapSnapshotJSONSerializer::SerializeStrings(Error &err){
-  write_ << "\"<dummy>\"";
-  for(auto& string : strings_){
-    SerializeString(err, string.c_str());
+  write_ << "\"<dummy>\"" << std::endl;
+  for(auto string : strings_){
+    write_ << ',';
+    SerializeString(err, (const unsigned char*)string.c_str());
     if(err.Fail()) return;
   }
 }
 
-void HeapSnapshotJSONSerializer::SerializeString(Error &err, std::string string){
-  write_ << '\"' << string << '\"' << ',' << std::endl;
-}
+
+
 }  // namespace llnode
